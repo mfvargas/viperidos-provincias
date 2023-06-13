@@ -1,0 +1,205 @@
+---
+title: "Vipéridos en provincias de Costa Rica"
+format: html
+---
+
+# Carga de paquetes
+
+```{r}
+#| label: carga-paquetes
+#| warning: false
+#| message: false
+#| code-fold: show
+
+# Carga de paquetes
+library(tidyverse)
+library(DT)
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+```
+
+# Carga de datos
+
+```{r}
+#| label: carga-datos
+#| warning: false
+#| message: false
+#| code-fold: show
+
+# Carga de datos de provincias de Costa Rica
+# El argumento dsn debe tener la ruta a la fuente de datos
+provincias <-
+  st_read(
+    dsn = "provincias_2020_simp_10m.geojson",
+    quiet = TRUE
+  ) |>
+  st_transform(4326) # reproyección a WGS84
+
+# Carga de datos de viéridos de Costa Rica
+viperidos <-
+  st_read(
+    "viperidos.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude", # columna de longitud decimal
+      "Y_POSSIBLE_NAMES=decimalLatitude"   # columna de latitud decimal
+    ),
+    quiet = TRUE
+  )
+
+# Asignación del CRS WGS84
+st_crs(viperidos) <- 4326
+```
+
+# Mapa de riqueza de especies
+
+1. Unión espacial de vipéridos y provincias
+
+```{r}
+#| label: union-viperidos-provincias
+#| warning: false
+#| message: false
+#| code-fold: show
+
+viperidos_union_provincias <- 
+  st_join(
+    x = viperidos,
+    y = dplyr::select(provincias, cod_provin), # selección de columna cod_canton
+    join = st_within
+  )
+```
+
+2. Conteo de la cantidad de especies de vipéridos en cada cantón
+
+```{r}
+#| label: conteo-viperidos-provincias
+#| warning: false
+#| message: false
+#| code-fold: show
+
+# Conteo de la cantidad de especies de vipéridos en provicias
+riqueza_especies_viperidos_provincias <-
+  viperidos_union_provincias |>
+  st_drop_geometry() |>
+  group_by(cod_provin) |>
+  summarize(riqueza_especies_viperidos = n_distinct(species, na.rm = TRUE))
+
+```
+
+3. Unión no espacial de provincias con el dataframe de riqueza de especies en provincias
+
+```{r}
+#| label: union-provincias-riqueza
+#| warning: false
+#| message: false
+#| code-fold: show
+
+provincias_union_riqueza <-
+  left_join(
+    x = provincias,
+    y = riqueza_especies_viperidos_provincias,
+    by = "cod_provin"
+  ) |>
+  replace_na(list(riqueza_especies_viperidos = 0))
+```
+
+4. mapa
+
+```{r}
+#| label: mapa-riqueza
+#| warning: false
+#| message: false
+#| code-fold: show
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = provincias_union_riqueza$riqueza_especies_felidos,
+    na.color = "transparent"
+  )
+
+# Paleta de colores de especies
+colores_especies <- colorFactor(
+  palette = viridis(length(unique(viperidos$species))), 
+  domain = viperidos$species
+)
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = provincias_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(provincias_union_riqueza$riqueza_especies_viperidos),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>Provincia:</strong>", provincias_union_riqueza$provincia),
+      paste("<strong>Riqueza de especies:</strong>", provincias_union_riqueza$riqueza_especies_viperidos),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomright",
+    pal = colores_riqueza_especies,
+    values = provincias_union_riqueza$riqueza_especies_viperidos,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |>
+  addCircleMarkers(
+    data = viperidos,
+    stroke = F,
+    radius = 4,
+    fillColor = ~colores_especies(viperidos$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", viperidos$species),
+      paste0("<strong>Localidad: </strong>", viperidos$locality),
+      paste0("<strong>Fecha: </strong>", viperidos$eventDate),
+      paste0("<strong>Fuente: </strong>", viperidos$institutionCode),
+      paste0("<a href='", viperidos$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  ) |>  
+  addLegend(
+    position = "bottomleft",    
+    pal = colores_especies,
+    values = viperidos$species,
+    title = "Especies",
+    group = "Registros de presencia"    
+  ) |>  
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies",
+      "Registros de presencia"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia") 
+```
+
